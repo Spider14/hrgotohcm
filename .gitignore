@@ -1,0 +1,8 @@
+.env
+vendor/
+public/uploads/
+public/assets/img/company_logo_*
+app/storage/
+*.log
+.DS_Store
+Thumbs.db
