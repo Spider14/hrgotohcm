@@ -6,3 +6,10 @@ app/storage/
 *.log
 .DS_Store
 Thumbs.db
+HRGoTo_HCM_Test_Guide.doc
+HRGoTo_HCM_Training_Guide.pdf
+public/HRGoTo_HCM_Training_Guide.pdf
+
+# Docker / CI
+docker-compose.override.yml
+key.json

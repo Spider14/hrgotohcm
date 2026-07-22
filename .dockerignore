@@ -1,0 +1,12 @@
+.git
+.env
+vendor/
+app/storage/backups/
+node_modules/
+*.md
+*.sql
+*.pdf
+*.doc
+*.log
+.DS_Store
+Thumbs.db

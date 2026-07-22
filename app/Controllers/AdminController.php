@@ -925,11 +925,7 @@ class AdminController {
         CSRFMiddleware::validate($request);
         header('Content-Type: application/json');
         try {
-            $dbHost = $_ENV['DB_HOST'] ?? 'localhost';
-            $dbPort = $_ENV['DB_PORT'] ?? '3306';
             $dbName = $_ENV['DB_DATABASE'] ?? 'hrmis';
-            $dbUser = $_ENV['DB_USERNAME'] ?? 'root';
-            $dbPass = $_ENV['DB_PASSWORD'] ?? '';
             $backupDir = __DIR__ . '/../storage/backups';
             if (!is_dir($backupDir)) mkdir($backupDir, 0755, true);
             $timestamp = date('Ymd_His');
@@ -940,8 +936,7 @@ class AdminController {
             $_SESSION['_backup_start'] = microtime(true);
             session_write_close();
             $this->writeBackupProgress(0, 'running', 'Preparing database backup...');
-            $dsn = "mysql:host=$dbHost;port=$dbPort;dbname=$dbName;charset=utf8mb4";
-            $pdo = new \PDO($dsn, $dbUser, $dbPass, [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION, \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_NUM]);
+            $pdo = Database::getConnection();
             $stmt = $pdo->query("SHOW TABLES");
             $tables = $stmt->fetchAll(\PDO::FETCH_COLUMN);
             $total = count($tables);
