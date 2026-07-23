@@ -152,6 +152,7 @@ $stageIcons = [
                 <button class="btn btn-sm btn-outline-primary" onclick="showScheduleInterview()"><i class="fas fa-calendar-plus me-1"></i>Interview</button>
                 <button class="btn btn-sm btn-outline-success" onclick="showSendOffer()"><i class="fas fa-file-signature me-1"></i>Offer</button>
                 <button class="btn btn-sm btn-outline-secondary" onclick="showAddNote()"><i class="fas fa-sticky-note me-1"></i>Note</button>
+                <button class="btn btn-sm btn-outline-warning" onclick="addToTalentPool()" title="Add to Talent Pool"><i class="fas fa-address-book me-1"></i>Talent Pool</button>
                 <a id="viewFullProfile" href="#" class="btn btn-sm btn-outline-info" target="_blank"><i class="fas fa-external-link-alt me-1"></i>Full Profile</a>
             </div>
             <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -334,4 +335,23 @@ function buildOffersTab(offers) {
 function showScheduleInterview() { if (currentApplicantId) new bootstrap.Modal(document.getElementById('interviewModal')).show(); }
 function showSendOffer() { if (currentApplicantId) new bootstrap.Modal(document.getElementById('offerModal')).show(); }
 function showAddNote() { if (currentApplicantId) new bootstrap.Modal(document.getElementById('noteModal')).show(); }
+function addToTalentPool() {
+    if (!currentApplicantId) return;
+    if (!confirm('Add this applicant to the talent pool?')) return;
+    const f = document.createElement('form');
+    f.method = 'POST';
+    f.action = '/recruitment/talent-pool/add';
+    const csrfInput = document.createElement('input');
+    csrfInput.type = 'hidden';
+    csrfInput.name = 'csrf_token';
+    csrfInput.value = '<?= $csrf ?>';
+    f.appendChild(csrfInput);
+    const appIdInput = document.createElement('input');
+    appIdInput.type = 'hidden';
+    appIdInput.name = 'application_id';
+    appIdInput.value = currentApplicantId;
+    f.appendChild(appIdInput);
+    document.body.appendChild(f);
+    f.submit();
+}
 </script>

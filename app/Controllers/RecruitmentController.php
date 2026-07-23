@@ -13,7 +13,7 @@ use PDO;
 class RecruitmentController {
 
     public function __construct() {
-        AuthMiddleware::checkRole(['Super Admin', 'HR Manager']);
+        AuthMiddleware::checkRole(['Super Admin', 'HR Manager', 'Recruiter']);
         $this->ensureTablesExist();
     }
 
@@ -1672,7 +1672,7 @@ class RecruitmentController {
             foreach ($shortlisted as $app) {
                 $stmt = $db->prepare("UPDATE applications SET status = 'Shortlisted', rank_score = ? WHERE id = ?");
                 $stmt->execute([$app['rank_score'], $app['id']]);
-                $statusLogStmt->execute([$app['id']], 'pending', 'Shortlisted', $userId ?: null, 'AI auto-shortlist (score: ' . round($app['rank_score'], 1) . ')');
+                $statusLogStmt->execute([$app['id'], 'pending', 'Shortlisted', $userId ?: null, 'AI auto-shortlist (score: ' . round($app['rank_score'], 1) . ')']);
             }
             $db->commit();
         } catch (\Throwable $e) {
@@ -1744,7 +1744,7 @@ class RecruitmentController {
             $logStmt = $db->prepare("INSERT INTO application_status_log (application_id, old_status, new_status, changed_by, note) VALUES (?,?,?,?,?)");
             foreach ($appIds as $id) {
                 $stmt->execute([(int)$id]);
-                $logStmt->execute([(int)$id], 'pending', 'Shortlisted', $userId ?: null, 'Manual shortlist');
+                $logStmt->execute([(int)$id, 'pending', 'Shortlisted', $userId ?: null, 'Manual shortlist']);
             }
             $db->commit();
         } catch (\Throwable $e) {
@@ -1835,7 +1835,8 @@ class RecruitmentController {
                 SELECT a.id, a.first_name, a.last_name, a.reference_number, a.phone, a.email,
                        a.highest_qualification, a.institution, a.years_experience, a.status,
                        a.rank_score, COALESCE(j.title, 'General Application') AS job_title,
-                       (SELECT MAX(i.score) FROM application_interviews i WHERE i.application_id = a.id AND i.score IS NOT NULL) AS interview_score
+                       (SELECT MAX(i.score) FROM application_interviews i WHERE i.application_id = a.id AND i.score IS NOT NULL) AS interview_score,
+                       (SELECT i.id FROM application_interviews i WHERE i.application_id = a.id ORDER BY i.id DESC LIMIT 1) AS interview_id
                 FROM applications a
                 LEFT JOIN jobs j ON a.job_id = j.id
                 WHERE a.job_id = ? AND a.status IN ('Shortlisted','Interviewed')
@@ -1891,7 +1892,7 @@ class RecruitmentController {
             $stmt->execute([$appId]);
 
             $logStmt = $db->prepare("INSERT INTO application_status_log (application_id, old_status, new_status, changed_by, note) VALUES (?,?,?,?,?)");
-            $logStmt->execute([$appId], $app['status'], 'Hired', $userId ?: null, 'Hired via ranking view');
+            $logStmt->execute([$appId, $app['status'], 'Hired', $userId ?: null, 'Hired via ranking view']);
 
             $this->createStaffFromApplicant($db, $appId, $app);
 
@@ -1915,20 +1916,20 @@ class RecruitmentController {
         $existingUser->execute([$app['email'] ?? '']);
         if ($existingUser->fetch()) return;
 
+        $fullName = trim(($app['first_name'] ?? '') . ' ' . ($app['last_name'] ?? ''));
+        $username = strtolower(preg_replace('/[^a-zA-Z0-9]/', '', $fullName)) . rand(100, 999);
         $passwordHash = password_hash('ChangeMe@' . rand(1000, 9999), PASSWORD_BCRYPT);
-        $stmt = $db->prepare("INSERT INTO users (first_name, last_name, email, password_hash, role_id, created_at) VALUES (?, ?, ?, ?, (SELECT id FROM roles WHERE role_name = 'Staff' LIMIT 1), NOW())");
-        $stmt->execute([$app['first_name'], $app['last_name'], $app['email'], $passwordHash]);
+        $stmt = $db->prepare("INSERT INTO users (fullname, username, email, password, role_id, status, created_at) VALUES (?, ?, ?, ?, (SELECT id FROM roles WHERE role_name = 'Staff' LIMIT 1), 'Active', NOW())");
+        $stmt->execute([$fullName, $username, $app['email'], $passwordHash]);
         $userId = (int)$db->lastInsertId();
 
         if ($userId > 0) {
-            $stmt = $db->prepare("INSERT INTO staff_records (user_id, first_name, last_name, phone_one, gender, date_of_birth, ghana_card_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
+            $stmt = $db->prepare("INSERT INTO staff_records (user_id, gender, date_of_birth, phone_one, ghana_card_number, created_at) VALUES (?, ?, ?, ?, ?, NOW())");
             $stmt->execute([
                 $userId,
-                $app['first_name'],
-                $app['last_name'],
-                $app['phone'] ?? null,
                 $app['gender'] ?? null,
                 $app['date_of_birth'] ?? null,
+                $app['phone'] ?? null,
                 $app['ghana_card_number'] ?? null
             ]);
         }

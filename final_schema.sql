@@ -225,8 +225,20 @@ CREATE TABLE sms_campaign_templates (
     sms_cam_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     pending TEXT NULL,
     shortlisted TEXT NULL,
+    interviewed TEXT NULL,
     hired TEXT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE email_templates (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    template_name VARCHAR(120) NOT NULL,
+    template_subject VARCHAR(255) NOT NULL,
+    template_body TEXT NOT NULL,
+    variables VARCHAR(500) NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE sms_logs (
@@ -464,16 +476,24 @@ sms_apikey = VALUES(sms_apikey);
 INSERT INTO sender_ids (name) VALUES ('HRGoTo')
 ON DUPLICATE KEY UPDATE name = VALUES(name);
 
-INSERT INTO sms_campaign_templates (sms_cam_id, pending, shortlisted, hired)
+INSERT INTO sms_campaign_templates (sms_cam_id, pending, shortlisted, interviewed, hired)
 VALUES
 (1,
  'Dear [fullname], your application is pending review. HRGoTo HCM.',
  'Dear [fullname], congratulations. You have been shortlisted. HRGoTo HCM.',
+ 'Dear [fullname], you have been invited for an interview. Please attend on [interview_date] at [interview_time]. HRGoTo HCM.',
  'Dear [fullname], congratulations. You have been selected. HRGoTo HCM.')
 ON DUPLICATE KEY UPDATE
 pending = VALUES(pending),
 shortlisted = VALUES(shortlisted),
+interviewed = VALUES(interviewed),
 hired = VALUES(hired);
+
+INSERT INTO email_templates (template_name, template_subject, template_body, variables, is_active) VALUES
+('Appointment Letter', 'Appointment Letter - [job_title] - HRGoTo HCM',
+ '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;"><h2 style="color:#0d6efd;">Appointment Letter</h2><p>Dear [fullname],</p><p>Congratulations! We are pleased to offer you the position of <strong>[job_title]</strong> at our organization.</p><p>Please review the attached appointment letter for full details regarding your compensation, benefits, and start date.</p><p>If you have any questions, please do not hesitate to contact the HR department.</p><p>Best regards,<br><strong>HR Department</strong><br>HRGoTo HCM</p></div>',
+ '[fullname],[job_title]', 1)
+ON DUPLICATE KEY UPDATE template_subject = VALUES(template_subject), template_body = VALUES(template_body), variables = VALUES(variables);
 
 INSERT INTO appraisal_metrics (metric_name, metric_prompt, is_active) VALUES
 ('Service Delivery', 'Rate your service delivery quality and timeliness.', 1),

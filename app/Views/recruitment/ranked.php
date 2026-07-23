@@ -81,7 +81,10 @@ $csrf = \App\Helpers\Security::generateCsrfToken();
                                     <td>
                                         <div class="btn-group btn-group-sm">
                                             <a href="/recruitment/view?id=<?= $r['id'] ?>" class="btn btn-outline-primary" title="View Profile"><i class="fas fa-eye"></i></a>
-                                            <button type="button" class="btn btn-outline-info" title="Add Score" onclick="openScoreModal(<?= $r['id'] ?>)"><i class="fas fa-star"></i></button>
+                                            <?php if (!empty($r['interview_id'])): ?>
+                                                <button type="button" class="btn btn-outline-info" title="Add Score" onclick="openScoreModal(<?= $r['interview_id'] ?>)"><i class="fas fa-star"></i></button>
+                                            <?php endif; ?>
+                                            <button type="button" class="btn btn-outline-warning" title="Add to Talent Pool" onclick="addToPool(<?= $r['id'] ?>)"><i class="fas fa-address-book"></i></button>
                                             <button type="button" class="btn btn-success" title="Hire" onclick="confirmHire(<?= $r['id'] ?>, '<?= htmlspecialchars($r['first_name'] . ' ' . $r['last_name'], ENT_QUOTES) ?>')"><i class="fas fa-user-check"></i> Hire</button>
                                         </div>
                                     </td>
@@ -111,12 +114,6 @@ $csrf = \App\Helpers\Security::generateCsrfToken();
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <p class="small text-muted">Select the interview to score:</p>
-                    <div class="mb-3">
-                        <label class="form-label fw-semibold">Interview ID</label>
-                        <input type="number" name="interview_id_display" id="score_interview_id_display" class="form-control" required>
-                        <small class="text-muted">Find the interview ID from the pipeline or interview list.</small>
-                    </div>
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Score (0-100)</label>
                         <input type="number" name="score" class="form-control" min="0" max="100" step="0.5" required>
@@ -167,9 +164,26 @@ function confirmHire(id, name) {
     document.getElementById('hire_applicant_name').textContent = name;
     new bootstrap.Modal(document.getElementById('hireModal')).show();
 }
-function openScoreModal(appId) {
-    document.getElementById('score_interview_id').value = appId;
-    document.getElementById('score_interview_id_display').value = appId;
+function openScoreModal(interviewId) {
+    document.getElementById('score_interview_id').value = interviewId;
     new bootstrap.Modal(document.getElementById('scoreModal')).show();
+}
+function addToPool(appId) {
+    if (!confirm('Add this applicant to the talent pool?')) return;
+    const f = document.createElement('form');
+    f.method = 'POST';
+    f.action = '/recruitment/talent-pool/add';
+    const csrfInput = document.createElement('input');
+    csrfInput.type = 'hidden';
+    csrfInput.name = 'csrf_token';
+    csrfInput.value = '<?= $csrf ?>';
+    f.appendChild(csrfInput);
+    const appIdInput = document.createElement('input');
+    appIdInput.type = 'hidden';
+    appIdInput.name = 'application_id';
+    appIdInput.value = appId;
+    f.appendChild(appIdInput);
+    document.body.appendChild(f);
+    f.submit();
 }
 </script>
