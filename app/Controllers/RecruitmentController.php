@@ -61,6 +61,8 @@ class RecruitmentController {
             interviewer VARCHAR(255) DEFAULT NULL,
             location VARCHAR(255) DEFAULT NULL,
             notes TEXT DEFAULT NULL,
+            score DECIMAL(5,2) DEFAULT NULL,
+            score_comment TEXT DEFAULT NULL,
             created_by INT UNSIGNED DEFAULT NULL,
             status ENUM('scheduled', 'completed', 'cancelled') DEFAULT 'scheduled',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -79,9 +81,35 @@ class RecruitmentController {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
         )");
+        $db->exec("CREATE TABLE IF NOT EXISTS talent_pool (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            application_id INT UNSIGNED NOT NULL,
+            pool_status ENUM('active','archived','hired') DEFAULT 'active',
+            added_by INT UNSIGNED DEFAULT NULL,
+            notes TEXT DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE,
+            UNIQUE KEY unique_talent_app (application_id)
+        )");
 
-        // Migrate existing tables created by earlier schema versions
+        $this->ensureColumn($db, 'jobs', 'shortlist_limit', "INT UNSIGNED NOT NULL DEFAULT 10");
+        $this->ensureColumn($db, 'applications', 'rank_score', "DECIMAL(8,2) DEFAULT NULL");
+        $this->ensureColumn($db, 'application_interviews', 'score', "DECIMAL(5,2) DEFAULT NULL");
+        $this->ensureColumn($db, 'application_interviews', 'score_comment', "TEXT DEFAULT NULL");
+        $this->ensureColumn($db, 'sms_campaign_templates', 'interviewed', "TEXT NOT NULL DEFAULT ''");
+
         $this->migratePipelineSchema($db);
+    }
+
+    private function ensureColumn(PDO $db, string $table, string $column, string $definition): void {
+        try {
+            $check = $db->prepare("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND COLUMN_NAME = :c");
+            $check->execute(['t' => $table, 'c' => $column]);
+            if ((int)$check->fetchColumn() === 0) {
+                $db->exec("ALTER TABLE `{$table}` ADD COLUMN `{$column}` {$definition}");
+            }
+        } catch (\Throwable $e) { /* table may not exist yet */ }
     }
 
     private function migratePipelineSchema($db): void {
@@ -1569,6 +1597,490 @@ class RecruitmentController {
 
         header('Content-Type: application/json');
         echo json_encode(['app' => $app, 'log' => $log, 'interviews' => $interviews, 'offers' => $offers]);
+        exit;
+    }
+
+    // =====================================================
+    // AI SHORTLISTING
+    // =====================================================
+
+    public function shortlistView(Request $request): void {
+        $db = Database::getConnection();
+        $jobs = $db->query("SELECT id, title, requirements, shortlist_limit FROM jobs WHERE status = 'open' ORDER BY title")->fetchAll(PDO::FETCH_ASSOC);
+
+        $filterJob = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
+        $applicants = [];
+        if ($filterJob > 0) {
+            $stmt = $db->prepare("
+                SELECT a.id, a.first_name, a.last_name, a.reference_number, a.phone, a.email,
+                       a.highest_qualification, a.institution, a.years_experience, a.status,
+                       COALESCE(j.title, 'General Application') AS job_title
+                FROM applications a
+                LEFT JOIN jobs j ON a.job_id = j.id
+                WHERE a.job_id = ? AND a.status IN ('pending','Under review','reviewing')
+                ORDER BY a.submitted_at DESC
+            ");
+            $stmt->execute([$filterJob]);
+            $applicants = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+
+        $pageTitle = "HRGoTo HCM - Shortlisting";
+        $appUrl = Security::escape($_ENV['APP_URL'] ?? '');
+        require_once __DIR__ . '/../Views/dashboard/layouts/header.php';
+        require_once __DIR__ . '/../Views/dashboard/layouts/sidebar.php';
+        require_once __DIR__ . '/../Views/recruitment/shortlist.php';
+        require_once __DIR__ . '/../Views/dashboard/layouts/footer.php';
+    }
+
+    public function autoShortlist(Request $request): void {
+        CSRFMiddleware::validate($request);
+        $db = Database::getConnection();
+        $jobId = (int)($_POST['job_id'] ?? 0);
+        $limit = (int)($_POST['shortlist_limit'] ?? 10);
+
+        if ($jobId <= 0 || $limit <= 0) {
+            Security::setFlash('error', 'Invalid job or limit.');
+            header('Location: /recruitment/shortlist');
+            exit;
+        }
+
+        $stmt = $db->prepare("SELECT requirements, title FROM jobs WHERE id = ?");
+        $stmt->execute([$jobId]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$job) {
+            Security::setFlash('error', 'Job not found.');
+            header('Location: /recruitment/shortlist');
+            exit;
+        }
+
+        $stmt = $db->prepare("
+            SELECT a.id, a.first_name, a.last_name, a.highest_qualification, a.institution,
+                   a.years_experience, a.publications, a.relevance_statement
+            FROM applications a
+            WHERE a.job_id = ? AND a.status IN ('pending','Under review','reviewing')
+        ");
+        $stmt->execute([$jobId]);
+        $applicants = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $ranked = $this->rankApplicantsList($applicants, $job['requirements'] ?? '');
+        $shortlisted = array_slice($ranked, 0, $limit);
+
+        $db->beginTransaction();
+        try {
+            $statusLogStmt = $db->prepare("INSERT INTO application_status_log (application_id, old_status, new_status, changed_by, note) VALUES (?,?,?,?,?)");
+            $userId = (int)($_SESSION['user_id'] ?? 0);
+            foreach ($shortlisted as $app) {
+                $stmt = $db->prepare("UPDATE applications SET status = 'Shortlisted', rank_score = ? WHERE id = ?");
+                $stmt->execute([$app['rank_score'], $app['id']]);
+                $statusLogStmt->execute([$app['id']], 'pending', 'Shortlisted', $userId ?: null, 'AI auto-shortlist (score: ' . round($app['rank_score'], 1) . ')');
+            }
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollBack();
+            Security::setFlash('error', 'Shortlisting failed: ' . $e->getMessage());
+            header('Location: /recruitment/shortlist?job_id=' . $jobId);
+            exit;
+        }
+
+        Security::setFlash('ok', count($shortlisted) . ' applicant(s) auto-shortlisted for "' . htmlspecialchars($job['title']) . '".');
+        header('Location: /recruitment/shortlist?job_id=' . $jobId);
+        exit;
+    }
+
+    private function rankApplicantsList(array $applicants, string $jobRequirements): array {
+        $qualOrder = [
+            'phd' => 5, 'doctorate' => 5, 'master' => 4, 'mba' => 4,
+            'bachelor' => 3, 'degree' => 3, 'hnd' => 2, 'diploma' => 2,
+            'certificate' => 1, 'ssce' => 0, 'wassce' => 0,
+        ];
+
+        $reqLower = strtolower($jobRequirements);
+        $keywords = array_filter(preg_split('/[\s,;]+/', $reqLower));
+
+        foreach ($applicants as &$app) {
+            $score = 0;
+
+            $qualLower = strtolower($app['highest_qualification'] ?? '');
+            foreach ($qualOrder as $key => $pts) {
+                if (strpos($qualLower, $key) !== false) {
+                    $score += $pts * 10;
+                    break;
+                }
+            }
+
+            $exp = (int)($app['years_experience'] ?? 0);
+            $score += min($exp * 5, 50);
+
+            $text = strtolower(($app['publications'] ?? '') . ' ' . ($app['relevance_statement'] ?? ''));
+            foreach ($keywords as $kw) {
+                if (strlen($kw) > 2 && strpos($text, $kw) !== false) {
+                    $score += 5;
+                }
+            }
+
+            $app['rank_score'] = $score;
+        }
+        unset($app);
+
+        usort($applicants, fn($a, $b) => $b['rank_score'] <=> $a['rank_score']);
+        return $applicants;
+    }
+
+    public function manualShortlist(Request $request): void {
+        CSRFMiddleware::validate($request);
+        $db = Database::getConnection();
+        $appIds = $_POST['application_ids'] ?? [];
+        $userId = (int)($_SESSION['user_id'] ?? 0);
+
+        if (empty($appIds)) {
+            Security::setFlash('error', 'No applicants selected.');
+            header('Location: /recruitment/shortlist');
+            exit;
+        }
+
+        $db->beginTransaction();
+        try {
+            $stmt = $db->prepare("UPDATE applications SET status = 'Shortlisted' WHERE id = ?");
+            $logStmt = $db->prepare("INSERT INTO application_status_log (application_id, old_status, new_status, changed_by, note) VALUES (?,?,?,?,?)");
+            foreach ($appIds as $id) {
+                $stmt->execute([(int)$id]);
+                $logStmt->execute([(int)$id], 'pending', 'Shortlisted', $userId ?: null, 'Manual shortlist');
+            }
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollBack();
+        }
+
+        Security::setFlash('ok', count($appIds) . ' applicant(s) manually shortlisted.');
+        header('Location: /recruitment/shortlist');
+        exit;
+    }
+
+    public function sendInterviewSms(Request $request): void {
+        CSRFMiddleware::validate($request);
+        $db = Database::getConnection();
+        $appIds = $_POST['application_ids'] ?? [];
+
+        if (empty($appIds)) {
+            Security::setFlash('error', 'No shortlisted applicants selected.');
+            header('Location: /recruitment/shortlist');
+            exit;
+        }
+
+        $config = $db->query("SELECT sms_endpoint, gen_sms_sender_id, sms_apikey FROM app_config LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        $smsTemplate = $db->query("SELECT interviewed FROM sms_campaign_templates LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+
+        $placeholders = $_POST['interview_placeholder'] ?? [];
+        $interviewDate = $placeholders['interview_date'] ?? date('Y-m-d');
+        $interviewTime = $placeholders['interview_time'] ?? '';
+        $interviewLocation = $placeholders['interview_location'] ?? '';
+
+        $successCount = 0;
+        foreach ($appIds as $id) {
+            $stmt = $db->prepare("SELECT first_name, last_name, phone FROM applications WHERE id = ?");
+            $stmt->execute([(int)$id]);
+            $app = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$app || empty($app['phone'])) continue;
+
+            $fullName = trim($app['first_name'] . ' ' . $app['last_name']);
+            $msg = $smsTemplate['interviewed'] ?? '';
+            $msg = str_replace('[fullname]', $fullName, $msg);
+            $msg = str_replace('[interview_date]', $interviewDate, $msg);
+            $msg = str_replace('[interview_time]', $interviewTime, $msg);
+            $msg = str_replace('[interview_location]', $interviewLocation, $msg);
+
+            if ($this->sendOutboundSms($config, $app['phone'], $msg)) {
+                $successCount++;
+            }
+        }
+
+        Security::setFlash('ok', "Interview SMS sent to {$successCount} applicant(s).");
+        header('Location: /recruitment/shortlist');
+        exit;
+    }
+
+    public function addInterviewScore(Request $request): void {
+        CSRFMiddleware::validate($request);
+        $db = Database::getConnection();
+        $interviewId = (int)($_POST['interview_id'] ?? 0);
+        $score = !empty($_POST['score']) ? (float)$_POST['score'] : null;
+        $comment = trim($_POST['score_comment'] ?? '');
+
+        if ($interviewId <= 0) {
+            Security::setFlash('error', 'Invalid interview.');
+            header('Location: /recruitment/ranked');
+            exit;
+        }
+
+        $stmt = $db->prepare("UPDATE application_interviews SET score = ?, score_comment = ?, status = 'completed' WHERE id = ?");
+        $stmt->execute([$score, $comment ?: null, $interviewId]);
+
+        Security::setFlash('ok', 'Interview score saved.');
+        header('Location: /recruitment/ranked');
+        exit;
+    }
+
+    // =====================================================
+    // RANKED VIEW + HIRE
+    // =====================================================
+
+    public function rankedView(Request $request): void {
+        $db = Database::getConnection();
+        $jobs = $db->query("SELECT id, title FROM jobs WHERE status = 'open' ORDER BY title")->fetchAll(PDO::FETCH_ASSOC);
+        $filterJob = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
+
+        $ranked = [];
+        if ($filterJob > 0) {
+            $stmt = $db->prepare("
+                SELECT a.id, a.first_name, a.last_name, a.reference_number, a.phone, a.email,
+                       a.highest_qualification, a.institution, a.years_experience, a.status,
+                       a.rank_score, COALESCE(j.title, 'General Application') AS job_title,
+                       (SELECT MAX(i.score) FROM application_interviews i WHERE i.application_id = a.id AND i.score IS NOT NULL) AS interview_score
+                FROM applications a
+                LEFT JOIN jobs j ON a.job_id = j.id
+                WHERE a.job_id = ? AND a.status IN ('Shortlisted','Interviewed')
+                ORDER BY COALESCE(a.rank_score, 0) DESC, interview_score DESC
+            ");
+            $stmt->execute([$filterJob]);
+            $ranked = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($ranked as &$r) {
+                $r['final_score'] = round(
+                    ($r['rank_score'] ?? 0) * 0.5 +
+                    ($r['interview_score'] ?? 0) * 0.4 +
+                    min((int)$r['years_experience'] * 2, 20) * 0.1
+                , 2);
+            }
+            unset($r);
+            usort($ranked, fn($a, $b) => $b['final_score'] <=> $a['final_score']);
+        }
+
+        $pageTitle = "HRGoTo HCM - Ranked Applicants";
+        $appUrl = Security::escape($_ENV['APP_URL'] ?? '');
+        require_once __DIR__ . '/../Views/dashboard/layouts/header.php';
+        require_once __DIR__ . '/../Views/dashboard/layouts/sidebar.php';
+        require_once __DIR__ . '/../Views/recruitment/ranked.php';
+        require_once __DIR__ . '/../Views/dashboard/layouts/footer.php';
+    }
+
+    public function hireApplicant(Request $request): void {
+        CSRFMiddleware::validate($request);
+        $db = Database::getConnection();
+        $appId = (int)($_POST['applicant_id'] ?? 0);
+        $userId = (int)($_SESSION['user_id'] ?? 0);
+
+        if ($appId <= 0) {
+            Security::setFlash('error', 'Invalid applicant.');
+            header('Location: /recruitment/ranked');
+            exit;
+        }
+
+        $stmt = $db->prepare("SELECT a.*, COALESCE(j.title, 'General Application') AS job_title FROM applications a LEFT JOIN jobs j ON a.job_id = j.id WHERE a.id = ?");
+        $stmt->execute([$appId]);
+        $app = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$app) {
+            Security::setFlash('error', 'Applicant not found.');
+            header('Location: /recruitment/ranked');
+            exit;
+        }
+
+        $fullName = trim($app['first_name'] . ' ' . $app['last_name']);
+        $db->beginTransaction();
+        try {
+            $stmt = $db->prepare("UPDATE applications SET status = 'Hired' WHERE id = ?");
+            $stmt->execute([$appId]);
+
+            $logStmt = $db->prepare("INSERT INTO application_status_log (application_id, old_status, new_status, changed_by, note) VALUES (?,?,?,?,?)");
+            $logStmt->execute([$appId], $app['status'], 'Hired', $userId ?: null, 'Hired via ranking view');
+
+            $this->createStaffFromApplicant($db, $appId, $app);
+
+            $this->sendHireNotifications($db, $app);
+
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollBack();
+            Security::setFlash('error', 'Hire failed: ' . $e->getMessage());
+            header('Location: /recruitment/ranked');
+            exit;
+        }
+
+        Security::setFlash('ok', htmlspecialchars($fullName) . ' has been hired and converted to staff.');
+        header('Location: /recruitment/ranked');
+        exit;
+    }
+
+    private function createStaffFromApplicant(PDO $db, int $appId, array $app): void {
+        $existingUser = $db->prepare("SELECT id FROM users WHERE email = ?");
+        $existingUser->execute([$app['email'] ?? '']);
+        if ($existingUser->fetch()) return;
+
+        $passwordHash = password_hash('ChangeMe@' . rand(1000, 9999), PASSWORD_BCRYPT);
+        $stmt = $db->prepare("INSERT INTO users (first_name, last_name, email, password_hash, role_id, created_at) VALUES (?, ?, ?, ?, (SELECT id FROM roles WHERE role_name = 'Staff' LIMIT 1), NOW())");
+        $stmt->execute([$app['first_name'], $app['last_name'], $app['email'], $passwordHash]);
+        $userId = (int)$db->lastInsertId();
+
+        if ($userId > 0) {
+            $stmt = $db->prepare("INSERT INTO staff_records (user_id, first_name, last_name, phone_one, gender, date_of_birth, ghana_card_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
+            $stmt->execute([
+                $userId,
+                $app['first_name'],
+                $app['last_name'],
+                $app['phone'] ?? null,
+                $app['gender'] ?? null,
+                $app['date_of_birth'] ?? null,
+                $app['ghana_card_number'] ?? null
+            ]);
+        }
+    }
+
+    private function sendHireNotifications(PDO $db, array $app): void {
+        $fullName = trim($app['first_name'] . ' ' . $app['last_name']);
+        $config = $db->query("SELECT sms_endpoint, gen_sms_sender_id, sms_apikey FROM app_config LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        $smsTemplate = $db->query("SELECT hired FROM sms_campaign_templates LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+
+        if ($config && $smsTemplate && !empty($app['phone'])) {
+            $msg = str_replace('[fullname]', $fullName, $smsTemplate['hired'] ?? '');
+            $this->sendOutboundSms($config, $app['phone'], $msg);
+        }
+
+        $smtpConfig = $db->query("SELECT smtp_host, smtp_port, smtp_username, smtp_password, smtp_encryption, smtp_from_email, smtp_from_name FROM app_config LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        $emailTemplate = $db->query("SELECT template_subject, template_body FROM email_templates WHERE template_name = 'Appointment Letter' LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+
+        if ($smtpConfig && $emailTemplate && !empty($app['email'])) {
+            try {
+                $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
+                $mail->isSMTP();
+                $mail->Host = $smtpConfig['smtp_host'] ?? '';
+                $mail->Port = (int)($smtpConfig['smtp_port'] ?? 587);
+                $mail->SMTPAuth = true;
+                $mail->Username = $smtpConfig['smtp_username'] ?? '';
+                $mail->Password = $smtpConfig['smtp_password'] ?? '';
+                $enc = $smtpConfig['smtp_encryption'] ?? 'tls';
+                if ($enc === 'tls') $mail->SMTPSecure = \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+                elseif ($enc === 'ssl') $mail->SMTPSecure = \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
+
+                $mail->setFrom($smtpConfig['smtp_from_email'] ?? '', $smtpConfig['smtp_from_name'] ?? 'HRGoTo HCM');
+                $mail->addAddress($app['email']);
+                $mail->isHTML(true);
+
+                $subject = str_replace('[fullname]', $fullName, str_replace('[job_title]', $app['job_title'] ?? '', $emailTemplate['template_subject']));
+                $body = str_replace('[fullname]', $fullName, str_replace('[job_title]', $app['job_title'] ?? '', $emailTemplate['template_body']));
+                $mail->Subject = $subject;
+                $mail->Body = $body;
+                $mail->send();
+            } catch (\Throwable $e) {
+                error_log("Appointment letter email failed: " . $e->getMessage());
+            }
+        }
+    }
+
+    public function appointmentLetterView(Request $request): void {
+        $db = Database::getConnection();
+        $template = $db->query("SELECT template_subject, template_body FROM email_templates WHERE template_name = 'Appointment Letter' LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+
+        $pageTitle = "HRGoTo HCM - Appointment Letter Template";
+        $appUrl = Security::escape($_ENV['APP_URL'] ?? '');
+        require_once __DIR__ . '/../Views/dashboard/layouts/header.php';
+        require_once __DIR__ . '/../Views/dashboard/layouts/sidebar.php';
+        require_once __DIR__ . '/../Views/recruitment/appointment_letter.php';
+        require_once __DIR__ . '/../Views/dashboard/layouts/footer.php';
+    }
+
+    // =====================================================
+    // TALENT POOL
+    // =====================================================
+
+    public function talentPoolView(Request $request): void {
+        $db = Database::getConnection();
+
+        $pool = $db->query("
+            SELECT tp.id AS pool_id, tp.pool_status, tp.notes AS pool_notes, tp.created_at AS added_at,
+                   a.id, a.first_name, a.last_name, a.reference_number, a.phone, a.email,
+                   a.highest_qualification, a.institution, a.years_experience, a.status,
+                   COALESCE(j.title, 'General Application') AS job_title
+            FROM talent_pool tp
+            JOIN applications a ON a.id = tp.application_id
+            LEFT JOIN jobs j ON a.job_id = j.id
+            WHERE tp.pool_status = 'active'
+            ORDER BY tp.created_at DESC
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $pageTitle = "HRGoTo HCM - Talent Pool";
+        $appUrl = Security::escape($_ENV['APP_URL'] ?? '');
+        require_once __DIR__ . '/../Views/dashboard/layouts/header.php';
+        require_once __DIR__ . '/../Views/dashboard/layouts/sidebar.php';
+        require_once __DIR__ . '/../Views/recruitment/talent_pool.php';
+        require_once __DIR__ . '/../Views/dashboard/layouts/footer.php';
+    }
+
+    public function addToTalentPool(Request $request): void {
+        CSRFMiddleware::validate($request);
+        $db = Database::getConnection();
+        $appId = (int)($_POST['application_id'] ?? 0);
+        $userId = (int)($_SESSION['user_id'] ?? 0);
+        $notes = trim($_POST['pool_notes'] ?? '');
+
+        if ($appId <= 0) {
+            Security::setFlash('error', 'Invalid applicant.');
+            header('Location: /recruitment/talent-pool');
+            exit;
+        }
+
+        try {
+            $stmt = $db->prepare("INSERT INTO talent_pool (application_id, added_by, notes) VALUES (?,?,?) ON DUPLICATE KEY UPDATE pool_status='active', notes=?");
+            $stmt->execute([$appId, $userId ?: null, $notes ?: null, $notes ?: null]);
+            Security::setFlash('ok', 'Applicant added to talent pool.');
+        } catch (\Throwable $e) {
+            Security::setFlash('error', 'Failed: ' . $e->getMessage());
+        }
+        header('Location: /recruitment/talent-pool');
+        exit;
+    }
+
+    public function removeFromTalentPool(Request $request): void {
+        CSRFMiddleware::validate($request);
+        $db = Database::getConnection();
+        $poolId = (int)($_POST['pool_id'] ?? 0);
+
+        $stmt = $db->prepare("UPDATE talent_pool SET pool_status = 'archived' WHERE id = ?");
+        $stmt->execute([$poolId]);
+        Security::setFlash('ok', 'Removed from talent pool.');
+        header('Location: /recruitment/talent-pool');
+        exit;
+    }
+
+    public function suggestFromTalentPool(Request $request): void {
+        CSRFMiddleware::validate($request);
+        $db = Database::getConnection();
+        $jobId = (int)($_POST['job_id'] ?? 0);
+        $limit = (int)($_POST['limit'] ?? 10);
+
+        if ($jobId <= 0) {
+            Security::setFlash('error', 'Select a job.');
+            header('Location: /recruitment/talent-pool');
+            exit;
+        }
+
+        $stmt = $db->prepare("SELECT requirements, title FROM jobs WHERE id = ?");
+        $stmt->execute([$jobId]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $poolApps = $db->query("
+            SELECT a.id, a.first_name, a.last_name, a.highest_qualification, a.institution,
+                   a.years_experience, a.publications, a.relevance_statement
+            FROM talent_pool tp
+            JOIN applications a ON a.id = tp.application_id
+            WHERE tp.pool_status = 'active'
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $ranked = $this->rankApplicantsList($poolApps, $job['requirements'] ?? '');
+        $suggested = array_slice($ranked, 0, $limit);
+
+        $_SESSION['talent_suggestions'] = $suggested;
+        $_SESSION['talent_suggestions_job'] = $job['title'] ?? '';
+        Security::setFlash('ok', count($suggested) . ' candidate(s) suggested from talent pool for "' . htmlspecialchars($job['title']) . '".');
+        header('Location: /recruitment/talent-pool');
         exit;
     }
 }

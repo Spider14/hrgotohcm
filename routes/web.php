@@ -96,6 +96,22 @@ $router->add('POST', 'recruitment/pipeline/send-offer',    'RecruitmentControlle
 $router->add('POST', 'recruitment/pipeline/add-note',      'RecruitmentController@pipelineAddNote');
 $router->add('GET',  'recruitment/pipeline/status-history', 'RecruitmentController@pipelineStatusHistory');
 
+// AI Shortlisting, Scoring, Ranking & Hire
+$router->add('GET',  'recruitment/shortlist',              'RecruitmentController@shortlistView');
+$router->add('POST', 'recruitment/shortlist/auto',         'RecruitmentController@autoShortlist');
+$router->add('POST', 'recruitment/shortlist/manual',       'RecruitmentController@manualShortlist');
+$router->add('POST', 'recruitment/shortlist/send-interview-sms', 'RecruitmentController@sendInterviewSms');
+$router->add('POST', 'recruitment/shortlist/score',        'RecruitmentController@addInterviewScore');
+$router->add('GET',  'recruitment/ranked',                 'RecruitmentController@rankedView');
+$router->add('POST', 'recruitment/hire',                   'RecruitmentController@hireApplicant');
+$router->add('GET',  'recruitment/appointment-letter',     'RecruitmentController@appointmentLetterView');
+
+// Talent Pool
+$router->add('GET',  'recruitment/talent-pool',            'RecruitmentController@talentPoolView');
+$router->add('POST', 'recruitment/talent-pool/add',        'RecruitmentController@addToTalentPool');
+$router->add('POST', 'recruitment/talent-pool/remove',     'RecruitmentController@removeFromTalentPool');
+$router->add('POST', 'recruitment/talent-pool/suggest',    'RecruitmentController@suggestFromTalentPool');
+
 // Reporting & File Utilities
 $router->add('GET',  'recruitment/compile-report',          'RecruitmentController@compileReport');
 $router->add('GET',  'recruitment/generate-report-endpoint', 'RecruitmentController@generateReportEndpoint');

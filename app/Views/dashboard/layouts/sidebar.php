@@ -24,7 +24,7 @@ if ($currentUri === '') {
 // Active state tracking for each collapsible section
 $isStaffManagementActive = in_array($currentUri, ['/staff', '/staff/profile', '/staff/edit', '/staff/promotions', '/staff/appraisals', '/staff/leave', '/onboard', '/admin/attendance', '/admin/attendance/register'], true);
 $isSelfServiceActive = in_array($currentUri, ['/staff/services', '/staff/portal', '/staff/approvals', '/staff/update-info', '/staff/my-leave', '/staff/promotion', '/staff/appraisal', '/staff/promotion/apply', '/staff/leave/apply', '/staff/appraisal/view', '/staff/attendance', '/staff/bank-details', '/staff/payslips', '/staff/dossier'], true);
-$isRecruitmentActive = in_array($currentUri, ['/recruitment', '/recruitment/rounds', '/recruitment/jobs', '/recruitment/pipeline'], true);
+$isRecruitmentActive = in_array($currentUri, ['/recruitment', '/recruitment/rounds', '/recruitment/jobs', '/recruitment/pipeline', '/recruitment/shortlist', '/recruitment/ranked', '/recruitment/talent-pool', '/recruitment/appointment-letter'], true);
 $isPayrollActive = in_array($currentUri, ['/payroll', '/payroll/index', '/payroll/components', '/payroll/employee-components', '/payroll/periods', '/payroll/process', '/payroll/payslips', '/payroll/deductions', '/payroll/bank-details', '/payroll/benefits'], true);
 $isSmsActive = in_array($currentUri, ['/sms/dashboard', '/sms/campaigns/bulk', '/sms/campaigns', '/sms/campaigns/configure_campaign'], true);
 $isEmailActive = in_array($currentUri, ['/email/send', '/email/templates'], true);
@@ -182,6 +182,26 @@ $isSystemSettingsActive = in_array($currentUri, ['/admin/company-profile', '/adm
                 <li>
                     <a href="<?php echo $routeBase; ?>recruitment/rounds" class="nav-link py-2 <?php echo ($currentUri === '/recruitment/rounds') ? 'text-info fw-bold' : 'text-white-50'; ?> text-decoration-none d-block small">
                         <i class="fas fa-rotate me-2"></i>Recruitment Rounds
+                    </a>
+                </li>
+                <li>
+                    <a href="<?php echo $routeBase; ?>recruitment/shortlist" class="nav-link py-2 <?php echo ($currentUri === '/recruitment/shortlist') ? 'text-info fw-bold' : 'text-white-50'; ?> text-decoration-none d-block small">
+                        <i class="fas fa-wand-magic-sparkles me-2"></i>AI Shortlisting
+                    </a>
+                </li>
+                <li>
+                    <a href="<?php echo $routeBase; ?>recruitment/ranked" class="nav-link py-2 <?php echo ($currentUri === '/recruitment/ranked') ? 'text-info fw-bold' : 'text-white-50'; ?> text-decoration-none d-block small">
+                        <i class="fas fa-ranking-star me-2"></i>Ranked Applicants
+                    </a>
+                </li>
+                <li>
+                    <a href="<?php echo $routeBase; ?>recruitment/talent-pool" class="nav-link py-2 <?php echo ($currentUri === '/recruitment/talent-pool') ? 'text-info fw-bold' : 'text-white-50'; ?> text-decoration-none d-block small">
+                        <i class="fas fa-address-book me-2"></i>Talent Pool
+                    </a>
+                </li>
+                <li>
+                    <a href="<?php echo $routeBase; ?>recruitment/appointment-letter" class="nav-link py-2 <?php echo ($currentUri === '/recruitment/appointment-letter') ? 'text-info fw-bold' : 'text-white-50'; ?> text-decoration-none d-block small">
+                        <i class="fas fa-file-signature me-2"></i>Appointment Letter
                     </a>
                 </li>
             </ul>
