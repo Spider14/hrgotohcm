@@ -97,7 +97,7 @@ class RecruitmentController {
         $this->ensureColumn($db, 'applications', 'rank_score', "DECIMAL(8,2) DEFAULT NULL");
         $this->ensureColumn($db, 'application_interviews', 'score', "DECIMAL(5,2) DEFAULT NULL");
         $this->ensureColumn($db, 'application_interviews', 'score_comment', "TEXT DEFAULT NULL");
-        $this->ensureColumn($db, 'sms_campaign_templates', 'interviewed', "TEXT NOT NULL DEFAULT ''");
+        $this->ensureColumn($db, 'sms_campaign_templates', 'interviewed', "TEXT NULL");
 
         $this->migratePipelineSchema($db);
     }
